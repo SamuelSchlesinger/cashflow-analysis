@@ -1,3 +1,39 @@
+//! # Cashflow Analysis
+//!
+//! The `cashflow-analysis` crate provides tools to define, simulate, and analyze a sequence of cashflow events—both deterministic and stochastic.
+//!
+//! ## Features
+//!
+//! - Define cashflow events using the [`CashflowEvent`] enum.
+//! - Build a sequential schedule of quarterly cashflow events with [`CashflowSchedule`].
+//! - Run Monte Carlo simulations to compute summary statistics (mean, variance, minimum, maximum) on cumulative cashflows.
+//!
+//! ## Example
+//!
+//! ```rust
+//! use cashflow_analysis::{CashflowSchedule, CashflowEvent, StochasticCashflowEvent};
+//! use rand::thread_rng;
+//!
+//! let mut schedule = CashflowSchedule::new();
+//! schedule.add_event(CashflowEvent::Deterministic(100.0));
+//! schedule.add_event(CashflowEvent::Stochastic(
+//!     StochasticCashflowEvent::Uniform { min: 10.0, max: 20.0 }
+//! ));
+//!
+//! let result = schedule.run_monte_carlo(10_000, thread_rng());
+//!
+//! for stat in result.quarter_stats {
+//!     println!(
+//!         "Quarter {}: Mean: {:.2}, Variance: {:.2}, Min: {:.2}, Max: {:.2}",
+//!         stat.quarter, stat.mean, stat.variance, stat.min, stat.max
+//!     );
+//! }
+//! ```
+//!
+//! ## Licensing & Repository
+//!
+//! See the LICENSE file for details. Visit [GitHub](https://github.com/your-username/cashflow-analysis) for more information.
+
 use rand::Rng;
 use rand::distr::{Distribution, weighted::WeightedIndex, Uniform};
 use rand_distr::{Normal, LogNormal, Exp};
@@ -128,9 +164,43 @@ pub struct SimulationResult {
 // --------------------------------------------------------------------
 // Extend CashflowSchedule with a Monte Carlo simulation method
 impl CashflowSchedule {
-    /// Runs a Monte Carlo simulation on the cashflow schedule over a given number of trials.
-    /// For each trial, it computes the cumulative cashflow per quarter and then calculates
-    /// the mean, variance, minimum, and maximum for each quarter across all trials.
+    /// Executes a Monte Carlo simulation on the cashflow schedule over a specified number
+    /// of trials.
+    ///
+    /// This method simulates the cumulative cashflow for each trial across the scheduled
+    /// quarterly events and computes summary statistics for every quarter, including the
+    /// mean, variance, minimum, and maximum cumulative cashflow observed.
+    ///
+    /// # Parameters
+    ///
+    /// - `num_trials`: The number of simulation trials to run.
+    /// - `rng`: A random number generator implementing the `Rng` trait.
+    ///
+    /// # Returns
+    ///
+    /// A [`SimulationResult`] containing per-quarter summary statistics.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use cashflow_analysis::{CashflowSchedule, CashflowEvent, StochasticCashflowEvent};
+    /// use rand::thread_rng;
+    ///
+    /// let mut schedule = CashflowSchedule::new();
+    /// schedule.add_event(CashflowEvent::Deterministic(100.0));
+    /// schedule.add_event(CashflowEvent::Stochastic(
+    ///     StochasticCashflowEvent::Uniform { min: 10.0, max: 20.0 }
+    /// ));
+    ///
+    /// let result = schedule.run_monte_carlo(10_000, thread_rng());
+    ///
+    /// for stat in result.quarter_stats {
+    ///     println!(
+    ///         "Quarter {}: Mean: {:.2}, Variance: {:.2}, Min: {:.2}, Max: {:.2}",
+    ///         stat.quarter, stat.mean, stat.variance, stat.min, stat.max
+    ///     );
+    /// }
+    /// ```
     pub fn run_monte_carlo(&self, num_trials: usize, mut rng: impl Rng) -> SimulationResult {
         let num_quarters = self.num_quarters();
         // Prepare a vector to record cumulative cashflow outcomes per quarter across trials
