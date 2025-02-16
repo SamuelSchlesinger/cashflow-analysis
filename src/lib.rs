@@ -110,7 +110,10 @@ pub enum CashflowEvent {
     /// **Scaled event variant:** Wraps an inner event and scales its simulated result by the given factor.
     ///
     /// When simulated, the output of the inner event is multiplied by `factor`.
-    Scaled { event: Box<CashflowEvent>, factor: f64 },
+    Scaled {
+        event: Box<CashflowEvent>,
+        factor: f64,
+    },
 }
 
 /// A schedule of cashflow events occurring sequentially by quarter.
@@ -446,14 +449,20 @@ impl CashflowEvent {
             },
             CashflowEvent::Exponential { rate } => CashflowEvent::Exponential { rate: *rate },
             CashflowEvent::Discrete { outcomes } => {
-                let out = outcomes.iter().map(|(ev, prob)| (ev.scale(factor), *prob)).collect();
+                let out = outcomes
+                    .iter()
+                    .map(|(ev, prob)| (ev.scale(factor), *prob))
+                    .collect();
                 CashflowEvent::Discrete { outcomes: out }
-            },
+            }
             CashflowEvent::Composite { events } => {
                 let evs = events.iter().map(|ev| ev.scale(factor)).collect();
                 CashflowEvent::Composite { events: evs }
-            },
-            CashflowEvent::Scaled { event, factor: inner_factor } => {
+            }
+            CashflowEvent::Scaled {
+                event,
+                factor: inner_factor,
+            } => {
                 // Combine the inner scaling factor with the new one.
                 event.scale(inner_factor * factor)
             }
