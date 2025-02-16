@@ -1,16 +1,19 @@
 //! # Cashflow Analysis
 //!
 //! The `cashflow-analysis` crate provides a comprehensive toolkit for defining, simulating, and analyzing 
-//! cashflow events across multiple quarters. It supports both deterministic cashflows and stochastic variations 
-//! via common probability distributions.
+//! sequential cashflow events over time (typically by quarter). It supports both deterministic cashflows and 
+//! various stochastic models (e.g. Normal, Log-Normal, Uniform, Exponential), enabling you to model uncertainty 
+//! and variability. This makes it especially useful for financial planning, risk assessment, and investment analysis.
 //!
 //! ## Features
 //!
 //! - **Flexible Event Definition:** Define cashflow events using the [`CashflowEvent`] enum.
 //! - **Sequential Scheduling:** Compose events into a [`CashflowSchedule`] where each event represents a quarter.
-//! - **Monte Carlo Simulation:** Run simulations to obtain statistical summaries of cumulative cashflows, including
-//!   sample mean, sample variance, minimum, and maximum values.
-//! - **Composable Transformations:** Easily scale, offset, and combine schedules using built-in helper methods.
+//! - **Monte Carlo Simulation:** Execute repeated random simulations (Monte Carlo) to aggregate and analyze 
+//!   cumulative cashflow distributions across time. The results include practical statistical summaries such as the 
+//!   mean, variance, extreme outcomes, and uncertainty intervals (95% confidence intervals), which help in assessing risk.
+//! - **Composable Transformations:** Easily adjust and compose cashflow schedules using operations like scaling 
+//!   (for factors such as inflation adjustments) and offsetting (for fixed changes), along with methods to append or combine schedules.
 //!
 //! ## Examples
 //!
@@ -51,8 +54,14 @@ use rand::Rng;
 use rand::distr::{Distribution, weighted::WeightedIndex, Uniform};
 use rand_distr::{Normal, LogNormal, Exp};
 
-/// Represents a cashflow event. This unified, recursive type supports both single‐payout
-/// events and compound events.
+/// Represents a cashflow event. This unified and recursive type enables you to model a wide variety 
+/// of cashflow scenarios. It supports:
+/// 
+/// - **Single-payout events:** Such as a fixed (deterministic) cashflow or a cashflow drawn from a stochastic model.
+/// - **Recursive events:** Where outcomes of one event may themselves be cashflow events (as with discrete events),
+///   or a group of events is combined (composite events).
+/// 
+/// This flexibility lets you capture complex real-world cashflow patterns within a simple API.
 ///
 /// # Variants
 ///
@@ -77,9 +86,12 @@ pub enum CashflowEvent {
 
 /// A schedule of cashflow events occurring sequentially by quarter.
 /// 
-/// Each event in the schedule represents the cashflow for a particular quarter (1-indexed).
-/// Use helper methods like [`scale`], [`offset`], [`append_schedule`], and [`combine`] to transform
-/// or compose schedules.
+/// Each event in the schedule represents the cashflow for a specific period (by default, a quarter).
+/// The sequential order is important since cashflows are accumulated over time.
+///
+/// Use helper methods like [`CashflowEvent::scale`], [`CashflowEvent::offset`], 
+/// [`CashflowSchedule::append_schedule`], and [`CashflowSchedule::combine`] to transform or compose schedules.
+/// These operations allow you to adjust your cashflow values (e.g. to account for inflation) or merge cashflow streams.
 pub struct CashflowSchedule {
     /// Vector of cashflow events for each quarter.
     pub events: Vec<CashflowEvent>,
@@ -135,7 +147,7 @@ impl CashflowSchedule {
 
     /// Returns a new schedule with all events scaled by a constant multiplier.
     ///
-    /// This applies the [`scale`] method of [`CashflowEvent`] to each event.
+    /// This applies the [`CashflowEvent::scale`] method of [`CashflowEvent`] to each event.
     pub fn scale(&self, factor: f64) -> CashflowSchedule {
         let events = self.events.iter().map(|ev| ev.scale(factor)).collect();
         CashflowSchedule::with_events(events)
@@ -143,7 +155,7 @@ impl CashflowSchedule {
 
     /// Returns a new schedule with all events offset by a constant value.
     ///
-    /// This applies the [`offset`] method of [`CashflowEvent`] to each event.
+    /// This applies the [`CashflowEvent::offset`] method of [`CashflowEvent`] to each event.
     pub fn offset(&self, shift: f64) -> CashflowSchedule {
         let events = self.events.iter().map(|ev| ev.offset(shift)).collect();
         CashflowSchedule::with_events(events)
@@ -194,27 +206,27 @@ impl CashflowSchedule {
         Some(CashflowSchedule::with_events(combined_events))
     }
 
-    /// Executes a Monte Carlo simulation on the cashflow schedule over a specified number
-    /// of trials.
-    ///
-    /// This method sequentially simulates the cumulative cashflow across quarters for each trial,
-    /// then computes summary statistics for every quarter:
-    ///
-    /// - **Mean:** Sample mean of cumulative cashflows.
-    /// - **Variance:** Sample variance (using n-1 as the denominator).
-    /// - **Min/Max:** The minimum and maximum cumulative values observed.
-    ///
+    /// Executes a Monte Carlo simulation on the cashflow schedule using a defined number of trials.
+    /// 
+    /// This method simulates the progression of cumulative cashflows for each trial across time (quarters) and provides 
+    /// practical statistics including:
+    /// 
+    /// - **Mean:** Average cumulative cashflow, providing an expectation of future cashflow.
+    /// - **Variance:** How much the outcomes deviate from the mean, indicating volatility or risk.
+    /// - **Min/Max:** The extreme outcomes observed in the simulation.
+    /// - **Lower/Upper Bounds:** Estimates of the 2.5th and 97.5th percentiles (the 95% confidence interval), which help you understand the uncertainty.
+    /// 
     /// # Parameters
-    ///
-    /// - `num_trials`: The number of simulation trials to run.
-    /// - `rng`: A random number generator implementing the [`Rng`] trait.
-    ///
+    /// 
+    /// - `num_trials`: Number of simulation iterations (more trials yield more robust results).
+    /// - `rng`: A random number generator that implements the [`Rng`] trait.
+    /// 
     /// # Returns
-    ///
-    /// A [`SimulationResult`] containing per-quarter summary statistics.
-    ///
+    /// 
+    /// A [`SimulationResult`] containing a vector of [`QuarterStatistics`] for each period.
+    /// 
     /// # Example
-    ///
+    /// 
     /// ```rust
     /// use cashflow_analysis::{CashflowSchedule, CashflowEvent};
     /// use rand::thread_rng;
@@ -227,8 +239,8 @@ impl CashflowSchedule {
     /// 
     /// for stat in result.quarter_stats {
     ///     println!(
-    ///         "Quarter {}: Mean: {:.2}, Variance: {:.2}, Min: {:.2}, Max: {:.2}",
-    ///         stat.quarter, stat.mean, stat.variance, stat.min, stat.max
+    ///         "Quarter {}: Mean: {:.2}, Variance: {:.2}, Min: {:.2}, Max: {:.2}, 95% CI: [{:.2}, {:.2}]",
+    ///         stat.quarter, stat.mean, stat.variance, stat.min, stat.max, stat.lower_bound, stat.upper_bound,
     ///     );
     /// }
     /// ```
@@ -259,14 +271,26 @@ impl CashflowSchedule {
                 } else {
                     0.0
                 };
-                let min = values.iter().cloned().fold(f64::INFINITY, f64::min);
-                let max = values.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+                let min_val = values.iter().cloned().fold(f64::INFINITY, f64::min);
+                let max_val = values.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+
+                // Compute percentiles for uncertainty bounds.
+                let mut sorted = values.clone();
+                sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                // Compute indexes for 2.5th and 97.5th percentiles.
+                let lower_index = ((n as f64 * 0.025).round() as usize).min(n - 1);
+                let upper_index = ((n as f64 * 0.975).round() as usize).min(n - 1);
+                let lower_bound = sorted[lower_index];
+                let upper_bound = sorted[upper_index];
+
                 QuarterStatistics {
                     quarter: q + 1,
                     mean,
                     variance,
-                    min,
-                    max,
+                    min: min_val,
+                    max: max_val,
+                    lower_bound,
+                    upper_bound,
                 }
             })
             .collect();
@@ -311,15 +335,29 @@ fn simulate_cashflow_event<R: Rng + ?Sized>(event: &CashflowEvent, rng: &mut R) 
 
 // --------------------------------------------------------------------
 // Structs to store simulation statistics
+/// Statistics for a given quarter of the simulation.
+///
+/// In addition to the basic summary statistics, this structure now provides uncertainty
+/// bounds computed as the 2.5th and 97.5th percentiles (approximating a 95% confidence interval).
 #[derive(Debug)]
 pub struct QuarterStatistics {
-    pub quarter: usize,   // Quarter number (1-indexed)
-    pub mean: f64,        // Mean cumulative cashflow for this quarter
-    pub variance: f64,    // Variance of the cumulative cashflow
-    pub min: f64,         // Minimum cumulative cashflow observed
-    pub max: f64,         // Maximum cumulative cashflow observed
+    /// Quarter number (1-indexed)
+    pub quarter: usize,
+    /// Sample mean of the cumulative cashflow for this quarter.
+    pub mean: f64,
+    /// Sample variance (using n-1 as the denominator).
+    pub variance: f64,
+    /// Minimum cumulative cashflow observed.
+    pub min: f64,
+    /// Maximum cumulative cashflow observed.
+    pub max: f64,
+    /// Lower bound (2.5th percentile) of the cumulative cashflow.
+    pub lower_bound: f64,
+    /// Upper bound (97.5th percentile) of the cumulative cashflow.
+    pub upper_bound: f64,
 }
 
+/// Simulation results, containing per-quarter statistics.
 #[derive(Debug)]
 pub struct SimulationResult {
     pub quarter_stats: Vec<QuarterStatistics>,
@@ -501,7 +539,7 @@ mod tests {
 
     #[test]
     fn test_scale_offset() {
-        // Create a schedule with one deterministic and one stochastic (Uniform) event.
+        // Create a schedule with one deterministic and one uniform event.
         let mut schedule = CashflowSchedule::new();
         schedule.add_event(CashflowEvent::Deterministic(100.0));
         schedule.add_event(CashflowEvent::Uniform { min: 10.0, max: 20.0 });
@@ -633,6 +671,175 @@ mod tests {
             assert!((*max - 20.0).abs() < f64::EPSILON);
         } else {
             panic!("Expected uniform event");
+        }
+    }
+
+    #[test]
+    fn test_composite_event() {
+        // Composite event: sum of a deterministic event and a uniform event.
+        let composite_event = CashflowEvent::Composite {
+            events: vec![
+                CashflowEvent::Deterministic(50.0),
+                CashflowEvent::Uniform { min: 10.0, max: 20.0 },
+            ],
+        };
+        let mut schedule = CashflowSchedule::new();
+        schedule.add_event(composite_event);
+        let rng = StdRng::seed_from_u64(999);
+        let result = schedule.run_monte_carlo(1_000, rng);
+        let stat = &result.quarter_stats[0];
+        // Check that the composite outcome is roughly in the expected range (i.e. [60,70]).
+        assert!(stat.mean >= 60.0 && stat.mean <= 70.0, "Composite event mean out of range: {}", stat.mean);
+        // Also verify that the uncertainty bounds make sense.
+        assert!(stat.lower_bound <= stat.mean && stat.mean <= stat.upper_bound,
+                "Composite event uncertainty bounds incorrect: lower: {}, upper: {}, mean: {}",
+                stat.lower_bound, stat.upper_bound, stat.mean);
+    }
+
+    #[test]
+    fn test_discrete_event() {
+        // Discrete event: two outcomes, 30.0 with probability 0.7 and 50.0 with probability 0.3.
+        let discrete_event = CashflowEvent::Discrete {
+            outcomes: vec![
+                (CashflowEvent::Deterministic(30.0), 0.7),
+                (CashflowEvent::Deterministic(50.0), 0.3),
+            ],
+        };
+        let mut schedule = CashflowSchedule::new();
+        schedule.add_event(discrete_event);
+        let rng = StdRng::seed_from_u64(555);
+        let result = schedule.run_monte_carlo(1_000, rng);
+        let stat = &result.quarter_stats[0];
+        // Expected weighted mean: 0.7 * 30 + 0.3 * 50 = 34.0. Allow a tolerance.
+        assert!((stat.mean - 34.0).abs() < 5.0, "Discrete event mean expected near 34.0, got {}", stat.mean);
+        // Check that the uncertainty bounds are sensible.
+        assert!(stat.lower_bound <= stat.mean && stat.mean <= stat.upper_bound,
+                "Discrete event uncertainty bounds incorrect: lower: {}, mean: {}, upper: {}",
+                stat.lower_bound, stat.mean, stat.upper_bound);
+    }
+
+    #[test]
+    fn test_uncertainty_bounds() {
+        // Create a schedule with a uniform event.
+        let mut schedule = CashflowSchedule::new();
+        schedule.add_event(CashflowEvent::Uniform { min: 10.0, max: 20.0 });
+        let rng = StdRng::seed_from_u64(789);
+        let result = schedule.run_monte_carlo(10_000, rng);
+        let stat = &result.quarter_stats[0];
+        // Check that the uncertainty bounds (lower_bound and upper_bound) enclose the mean.
+        assert!(stat.lower_bound <= stat.mean, "Lower bound exceeds mean: {} > {}", stat.lower_bound, stat.mean);
+        assert!(stat.mean <= stat.upper_bound, "Mean exceeds upper bound: {} > {}", stat.mean, stat.upper_bound);
+    }
+
+    // --- New tests to cover remaining variants and 100% coverage ---
+
+    #[test]
+    fn test_normal_event_transformation() {
+        let event = CashflowEvent::Normal { mean: 100.0, std_dev: 10.0 };
+        let scaled = event.scale(2.0);
+        if let CashflowEvent::Normal { mean, std_dev } = scaled {
+            assert!((mean - 200.0).abs() < f64::EPSILON);
+            assert!((std_dev - 20.0).abs() < f64::EPSILON);
+        } else {
+            panic!("Expected Normal variant");
+        }
+
+        let offset_event = event.offset(5.0);
+        if let CashflowEvent::Normal { mean, std_dev } = offset_event {
+            assert!((mean - 105.0).abs() < f64::EPSILON);
+            assert!((std_dev - 10.0).abs() < f64::EPSILON);
+        } else {
+            panic!("Expected Normal variant");
+        }
+    }
+
+    #[test]
+    fn test_lognormal_event_transformation() {
+        let event = CashflowEvent::LogNormal { location: 50.0, scale: 5.0 };
+        let scaled = event.scale(2.0);
+        if let CashflowEvent::LogNormal { location, scale } = scaled {
+            assert!((location - 100.0).abs() < f64::EPSILON);
+            assert!((scale - 10.0).abs() < f64::EPSILON);
+        } else {
+            panic!("Expected LogNormal variant");
+        }
+
+        let offset_event = event.offset(5.0);
+        if let CashflowEvent::LogNormal { location, scale } = offset_event {
+            assert!((location - 55.0).abs() < f64::EPSILON);
+            assert!((scale - 5.0).abs() < f64::EPSILON);
+        } else {
+            panic!("Expected LogNormal variant");
+        }
+    }
+
+    #[test]
+    fn test_exponential_event_transformation() {
+        let event = CashflowEvent::Exponential { rate: 0.1 };
+        let scaled = event.scale(2.0);
+        if let CashflowEvent::Exponential { rate } = scaled {
+            // Exponential events are not scaled by factor.
+            assert!((rate - 0.1).abs() < f64::EPSILON);
+        } else {
+            panic!("Expected Exponential variant");
+        }
+
+        let offset_event = event.offset(5.0);
+        if let CashflowEvent::Exponential { rate } = offset_event {
+            // Exponential events are not offset.
+            assert!((rate - 0.1).abs() < f64::EPSILON);
+        } else {
+            panic!("Expected Exponential variant");
+        }
+    }
+
+    #[test]
+    fn test_discrete_and_composite_transformation() {
+        // Build a discrete event with deterministic outcomes.
+        let discrete_event = CashflowEvent::Discrete {
+            outcomes: vec![
+                (CashflowEvent::Deterministic(20.0), 0.5),
+                (CashflowEvent::Deterministic(40.0), 0.5),
+            ],
+        };
+        let scaled_discrete = discrete_event.scale(2.0);
+        if let CashflowEvent::Discrete { outcomes } = scaled_discrete {
+            // Each outcome should be scaled.
+            match &outcomes[0].0 {
+                CashflowEvent::Deterministic(val) => assert!((val - 40.0).abs() < f64::EPSILON),
+                _ => panic!("Expected Deterministic outcome"),
+            }
+            match &outcomes[1].0 {
+                CashflowEvent::Deterministic(val) => assert!((val - 80.0).abs() < f64::EPSILON),
+                _ => panic!("Expected Deterministic outcome"),
+            }
+        } else {
+            panic!("Expected Discrete variant");
+        }
+
+        // Build a composite event.
+        let composite_event = CashflowEvent::Composite {
+            events: vec![
+                CashflowEvent::Deterministic(10.0),
+                CashflowEvent::Uniform { min: 5.0, max: 15.0 },
+            ],
+        };
+        let offset_composite = composite_event.offset(3.0);
+        if let CashflowEvent::Composite { events } = offset_composite {
+            // Expect the deterministic event to become 13, and the uniform event to have [8,18].
+            match &events[0] {
+                CashflowEvent::Deterministic(val) => assert!((val - 13.0).abs() < f64::EPSILON),
+                _ => panic!("Expected Deterministic event"),
+            }
+            match &events[1] {
+                CashflowEvent::Uniform { min, max } => {
+                    assert!((*min - 8.0).abs() < f64::EPSILON);
+                    assert!((*max - 18.0).abs() < f64::EPSILON);
+                }
+                _ => panic!("Expected Uniform event"),
+            }
+        } else {
+            panic!("Expected Composite variant");
         }
     }
 }
