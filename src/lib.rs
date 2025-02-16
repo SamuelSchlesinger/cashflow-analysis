@@ -363,50 +363,6 @@ pub struct SimulationResult {
     pub quarter_stats: Vec<QuarterStatistics>,
 }
 
-/// A builder for constructing a [`CashflowSchedule`] using a fluent API.
-///
-/// This builder provides a concise and readable way to assemble a schedule:
-///
-/// ```rust
-/// use cashflow_analysis::{CashflowScheduleBuilder, CashflowEvent};
-/// 
-/// let schedule = CashflowScheduleBuilder::new()
-///     .add_event(CashflowEvent::Deterministic(100.0))
-///     .add_event(CashflowEvent::Uniform { min: 10.0, max: 20.0 })
-///     .build();
-/// 
-/// assert_eq!(schedule.num_quarters(), 2);
-/// ```
-/// 
-/// This builder is particularly useful when constructing schedules from dynamic data.
-pub struct CashflowScheduleBuilder {
-    events: Vec<CashflowEvent>,
-}
-
-impl CashflowScheduleBuilder {
-    /// Creates a new schedule builder.
-    pub fn new() -> Self {
-        Self { events: Vec::new() }
-    }
-
-    /// Adds a cashflow event to the builder.
-    pub fn add_event(mut self, event: CashflowEvent) -> Self {
-        self.events.push(event);
-        self
-    }
-
-    /// Finalizes the builder and creates a [`CashflowSchedule`].
-    pub fn build(self) -> CashflowSchedule {
-        CashflowSchedule::with_events(self.events)
-    }
-}
-
-impl Default for CashflowScheduleBuilder {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl CashflowEvent {
     /// Returns a new cashflow event with all payouts multiplied by the given factor.
     pub fn scale(&self, factor: f64) -> CashflowEvent {
@@ -649,29 +605,6 @@ mod tests {
         let result = schedule.run_monte_carlo(100, rng);
         // Assert that the simulation produced some quarter statistics.
         assert!(!result.quarter_stats.is_empty(), "Expected non-empty quarter statistics");
-    }
-
-    #[test]
-    fn test_builder() {
-        // Use the builder to construct a cashflow schedule.
-        let schedule = CashflowScheduleBuilder::new()
-            .add_event(CashflowEvent::Deterministic(100.0))
-            .add_event(CashflowEvent::Uniform { min: 10.0, max: 20.0 })
-            .build();
-
-        assert_eq!(schedule.events.len(), 2);
-
-        if let CashflowEvent::Deterministic(val) = schedule.events[0] {
-            assert!((val - 100.0).abs() < f64::EPSILON);
-        } else {
-            panic!("Expected deterministic event");
-        }
-        if let CashflowEvent::Uniform { min, max } = &schedule.events[1] {
-            assert!((*min - 10.0).abs() < f64::EPSILON);
-            assert!((*max - 20.0).abs() < f64::EPSILON);
-        } else {
-            panic!("Expected uniform event");
-        }
     }
 
     #[test]
