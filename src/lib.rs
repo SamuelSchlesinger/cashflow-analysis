@@ -63,6 +63,18 @@ pub enum SimulationError {
     // Extend with other error types as needed.
 }
 
+// Implement Display for SimulationError
+impl std::fmt::Display for SimulationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SimulationError::InvalidParameter(msg) => write!(f, "Invalid parameter: {}", msg),
+        }
+    }
+}
+
+// Implement the standard error trait
+impl std::error::Error for SimulationError {}
+
 /// Trait to abstract simulation behavior.
 pub trait Simulate {
     fn simulate(&self, rng: &mut impl Rng) -> Result<f64, SimulationError>;
@@ -220,6 +232,19 @@ impl CashflowSchedule {
         config: &SimulationConfig,
     ) -> Result<SimulationResult, SimulationError> {
         let num_quarters = self.num_quarters();
+
+        // Validate simulation configuration percentiles.
+        if config.lower_percentile < 0.0 || config.lower_percentile > 1.0 ||
+           config.upper_percentile < 0.0 || config.upper_percentile > 1.0 {
+            return Err(SimulationError::InvalidParameter(
+                "Percentiles must be between 0.0 and 1.0".to_string(),
+            ));
+        }
+        if config.lower_percentile > config.upper_percentile {
+            return Err(SimulationError::InvalidParameter(
+                "Lower percentile cannot exceed upper percentile".to_string(),
+            ));
+        }
 
         // Generate a seed for each trial to initialize a thread‐local RNG.
         let mut seed_rng = rng;
@@ -400,10 +425,29 @@ pub struct QuarterStatistics {
     pub upper_bound: f64,
 }
 
+impl std::fmt::Display for QuarterStatistics {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Quarter {}: Mean: {:.2}, Variance: {:.2}, Min: {:.2}, Max: {:.2}, CI: [{:.2}, {:.2}]",
+            self.quarter, self.mean, self.variance, self.min, self.max, self.lower_bound, self.upper_bound
+        )
+    }
+}
+
 /// Simulation results, containing per-quarter statistics.
 #[derive(Debug)]
 pub struct SimulationResult {
     pub quarter_stats: Vec<QuarterStatistics>,
+}
+
+impl std::fmt::Display for SimulationResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for stat in &self.quarter_stats {
+            writeln!(f, "{}", stat)?;
+        }
+        Ok(())
+    }
 }
 
 impl CashflowEvent {
