@@ -775,5 +775,170 @@ mod tests {
             panic!("Expected Composite variant");
         }
     }
+
+    // --- New Monte Carlo Simulation Tests ---
+
+    /// Test that a schedule with purely deterministic events returns identical statistics.
+    #[test]
+    fn test_monte_carlo_deterministic() {
+        // Schedule with two deterministic events.
+        let mut schedule = CashflowSchedule::new();
+        schedule.add_event(CashflowEvent::Deterministic(100.0));
+        schedule.add_event(CashflowEvent::Deterministic(50.0));
+
+        let rng = StdRng::seed_from_u64(42);
+        let result = schedule.run_monte_carlo(100, rng);
+        assert_eq!(result.quarter_stats.len(), 2);
+
+        // For each quarter, the outcome should be fixed.
+        for (i, stat) in result.quarter_stats.iter().enumerate() {
+            let expected = if i == 0 { 100.0 } else { 150.0 };
+            assert!((stat.mean - expected).abs() < f64::EPSILON,
+                "Expected quarter {} mean to be {}, got {}", i+1, expected, stat.mean);
+            assert_eq!(stat.variance, 0.0, "Variance should be zero for deterministic events");
+            assert_eq!(stat.min, expected);
+            assert_eq!(stat.max, expected);
+            // With one unique value across all trials, the confidence interval equals the mean.
+            assert_eq!(stat.lower_bound, expected);
+            assert_eq!(stat.upper_bound, expected);
+        }
+    }
+
+    /// Test that a schedule with a single uniform event yields statistics close to theoretical predictions.
+    #[test]
+    fn test_monte_carlo_uniform_statistics() {
+        // Uniform event between 10 and 20.
+        let mut schedule = CashflowSchedule::new();
+        schedule.add_event(CashflowEvent::Uniform { min: 10.0, max: 20.0 });
+        let num_trials = 10_000;
+        let rng = StdRng::seed_from_u64(1001);
+        let result = schedule.run_monte_carlo(num_trials, rng);
+        let stat = &result.quarter_stats[0];
+
+        // Theoretical properties for Uniform(a=10, b=20):
+        // Mean = (a+b)/2 = 15, Variance = (b-a)²/12 = 100/12 ≈ 8.333...
+        let theoretical_mean = 15.0;
+        let theoretical_variance = 100.0 / 12.0;
+
+        let tolerance_mean = 0.5;      // Allowable deviation for mean.
+        let tolerance_variance = 1.0;  // Allowable deviation for variance.
+
+        assert!((stat.mean - theoretical_mean).abs() < tolerance_mean,
+                "Uniform event mean expected near {}, got {}", theoretical_mean, stat.mean);
+        assert!((stat.variance - theoretical_variance).abs() < tolerance_variance,
+                "Uniform event variance expected near {}, got {}", theoretical_variance, stat.variance);
+
+        // Check that uncertainty bounds are ordered properly.
+        assert!(stat.lower_bound <= stat.mean && stat.mean <= stat.upper_bound,
+                "Uniform event: expected lower_bound <= mean <= upper_bound");
+        // Basic sanity: the confidence interval should have nonzero width.
+        assert!(stat.upper_bound - stat.lower_bound > 0.0, "Expected non-zero confidence interval width");
+    }
+
+    /// Test that a schedule with a single normal event yields sample statistics near the theoretical values.
+    #[test]
+    fn test_monte_carlo_normal_statistics() {
+        // Normal event with mean 50 and std deviation 5.0 (variance 25).
+        let norm_mean = 50.0;
+        let norm_std = 5.0;
+        let mut schedule = CashflowSchedule::new();
+        schedule.add_event(CashflowEvent::Normal { mean: norm_mean, std_dev: norm_std });
+        let num_trials = 10_000;
+        let rng = StdRng::seed_from_u64(2002);
+        let result = schedule.run_monte_carlo(num_trials, rng);
+        let stat = &result.quarter_stats[0];
+
+        let tolerance_mean = 0.5;
+        let tolerance_variance = 2.0;
+
+        assert!((stat.mean - norm_mean).abs() < tolerance_mean,
+                "Normal event mean expected near {}, got {}", norm_mean, stat.mean);
+        assert!((stat.variance - 25.0).abs() < tolerance_variance,
+                "Normal event variance expected near {}, got {}", 25.0, stat.variance);
+        assert!(stat.lower_bound <= stat.mean && stat.mean <= stat.upper_bound,
+                "Normal event: bounds ordering violated");
+    }
+
+    /// Test that with a single trial, the statistics are trivial.
+    #[test]
+    fn test_single_trial_simulation() {
+        // A schedule with one uniform event.
+        let mut schedule = CashflowSchedule::new();
+        schedule.add_event(CashflowEvent::Uniform { min: 10.0, max: 20.0 });
+        let rng = StdRng::seed_from_u64(3030);
+        let result = schedule.run_monte_carlo(1, rng);
+        let stat = &result.quarter_stats[0];
+
+        // With one trial, variance must be zero and the min, max, and confidence bounds equal the single outcome.
+        assert_eq!(stat.variance, 0.0, "Variance for a single trial should be zero");
+        assert_eq!(stat.lower_bound, stat.mean);
+        assert_eq!(stat.upper_bound, stat.mean);
+    }
+
+    /// Test that a cumulative schedule (combining events across quarters) produces reasonable results.
+    #[test]
+    fn test_cumulative_simulation() {
+        // Define a schedule with two events:
+        // Quarter 1: Deterministic value of 100.
+        // Quarter 2: Uniform event in [10,20]. The cumulative sum is 100 + (Uniform value).
+        let mut schedule = CashflowSchedule::new();
+        schedule.add_event(CashflowEvent::Deterministic(100.0));
+        schedule.add_event(CashflowEvent::Uniform { min: 10.0, max: 20.0 });
+
+        let num_trials = 10_000;
+        let rng = StdRng::seed_from_u64(4040);
+        let result = schedule.run_monte_carlo(num_trials, rng);
+        assert_eq!(result.quarter_stats.len(), 2);
+
+        // Quarter 1 should have mean exactly 100.
+        let stat1 = &result.quarter_stats[0];
+        assert!((stat1.mean - 100.0).abs() < 0.1,
+            "Quarter 1 deterministic result expected 100, got {}", stat1.mean);
+
+        // Quarter 2: cumulative mean should be 100 + the mean of Uniform [10,20] i.e., 100 + 15 = 115.
+        let stat2 = &result.quarter_stats[1];
+        assert!((stat2.mean - 115.0).abs() < 0.5,
+                "Quarter 2 cumulative mean expected near 115, got {}", stat2.mean);
+    }
+
+    /// Test that the simulation correctly computes confidence intervals.
+    /// We check that approximately 95% of the simulation outcomes lie between the reported lower and upper bounds.
+    #[test]
+    fn test_confidence_interval_coverage() {
+        // Use a uniform event so that the distribution is known.
+        let mut schedule = CashflowSchedule::new();
+        schedule.add_event(CashflowEvent::Uniform { min: 10.0, max: 20.0 });
+        let num_trials = 10_000;
+        let rng = StdRng::seed_from_u64(5050);
+        let result = schedule.run_monte_carlo(num_trials, rng);
+        let stat = &result.quarter_stats[0];
+
+        // Re-run the simulation manually to obtain sorted outcomes.
+        let mut outcomes = Vec::with_capacity(num_trials);
+        let mut rng = StdRng::seed_from_u64(5050);
+        for _ in 0..num_trials {
+            let outcome = simulate_cashflow_event(&CashflowEvent::Uniform { min: 10.0, max: 20.0 }, &mut rng);
+            outcomes.push(outcome);
+        }
+        outcomes.sort_by(|a, b| a.partial_cmp(b).unwrap());
+
+        let lower_index = ((num_trials as f64 * 0.025).round() as usize).min(num_trials - 1);
+        let upper_index = ((num_trials as f64 * 0.975).round() as usize).min(num_trials - 1);
+        let manual_lower = outcomes[lower_index];
+        let manual_upper = outcomes[upper_index];
+
+        // Validate that the simulation's computed bounds match our manual calculation (within a small tolerance).
+        let tol = 1e-6;
+        assert!((stat.lower_bound - manual_lower).abs() < tol,
+                "Lower bound mismatch: simulation {} vs manual {}", stat.lower_bound, manual_lower);
+        assert!((stat.upper_bound - manual_upper).abs() < tol,
+                "Upper bound mismatch: simulation {} vs manual {}", stat.upper_bound, manual_upper);
+
+        // Finally, verify that about 95% of outcomes fall between these bounds.
+        let count_within = outcomes.iter().filter(|&&x| x >= manual_lower && x <= manual_upper).count();
+        let percentage = (count_within as f64) / (num_trials as f64);
+        assert!((percentage - 0.95).abs() < 0.03,
+            "Expected about 95% within CI, got {:.2}%", percentage * 100.0);
+    }
 }
 
