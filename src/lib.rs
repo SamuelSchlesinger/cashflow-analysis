@@ -88,15 +88,29 @@ pub trait Simulate {
 ///   with a probability.
 /// - `Composite { events }`: A compound event that aggregates multiple events (the resulting payout is
 ///   the sum of the simulated outcomes from each sub-event).
+/// - `Scaled { event: Box<CashflowEvent>, factor: f64 }`: **Scaled event variant:** Wraps an inner event and scales its simulated result by the given factor.
+///
+/// When simulated, the output of the inner event is multiplied by `factor`.
 #[derive(Debug, Clone)]
 pub enum CashflowEvent {
+    /// A fixed cashflow value.
     Deterministic(f64),
+    /// A payout drawn from a Normal distribution.
     Normal { mean: f64, std_dev: f64 },
+    /// A payout drawn from a LogNormal distribution.
     LogNormal { location: f64, scale: f64 },
+    /// A payout drawn uniformly from [min, max].
     Uniform { min: f64, max: f64 },
+    /// A payout drawn from an Exponential distribution.
     Exponential { rate: f64 },
+    /// A discrete event where each outcome is a [`CashflowEvent`] paired with a probability.
     Discrete { outcomes: Vec<(CashflowEvent, f64)> },
+    /// A compound event that aggregates multiple events.
     Composite { events: Vec<CashflowEvent> },
+    /// **Scaled event variant:** Wraps an inner event and scales its simulated result by the given factor.
+    ///
+    /// When simulated, the output of the inner event is multiplied by `factor`.
+    Scaled { event: Box<CashflowEvent>, factor: f64 },
 }
 
 /// A schedule of cashflow events occurring sequentially by quarter.
@@ -373,6 +387,9 @@ fn simulate_cashflow_event<R: Rng + ?Sized>(
             }
             Ok(sum)
         }
+        CashflowEvent::Scaled { event, factor } => {
+            Ok(simulate_cashflow_event(event, rng)? * factor)
+        }
     }
 }
 
@@ -407,7 +424,11 @@ pub struct SimulationResult {
 }
 
 impl CashflowEvent {
-    /// Returns a new cashflow event with all payouts multiplied by the given factor.
+    /// Returns a new scaled cashflow event.
+    ///
+    /// When simulated, the output of the underlying event is multiplied by the given `factor`.
+    /// For linear events, this scales the parameters accordingly. For instance, a Normal event's mean and standard deviation
+    /// are multiplied by `factor`, while an Exponential event remains unchanged.
     pub fn scale(&self, factor: f64) -> CashflowEvent {
         match self {
             CashflowEvent::Deterministic(val) => CashflowEvent::Deterministic(val * factor),
@@ -425,15 +446,16 @@ impl CashflowEvent {
             },
             CashflowEvent::Exponential { rate } => CashflowEvent::Exponential { rate: *rate },
             CashflowEvent::Discrete { outcomes } => {
-                let out = outcomes
-                    .iter()
-                    .map(|(ev, prob)| (ev.scale(factor), *prob))
-                    .collect();
+                let out = outcomes.iter().map(|(ev, prob)| (ev.scale(factor), *prob)).collect();
                 CashflowEvent::Discrete { outcomes: out }
-            }
+            },
             CashflowEvent::Composite { events } => {
                 let evs = events.iter().map(|ev| ev.scale(factor)).collect();
                 CashflowEvent::Composite { events: evs }
+            },
+            CashflowEvent::Scaled { event, factor: inner_factor } => {
+                // Combine the inner scaling factor with the new one.
+                event.scale(inner_factor * factor)
             }
         }
     }
