@@ -38,7 +38,7 @@ Cashflow Analysis is a Rust crate that provides a flexible toolkit for defining,
 - **Composable Transformations:**  
   Easily manipulate your cashflow schedules:
   - **Scaling:** Adjust cashflow values (e.g., for inflation) via the `.scale()` method.
-  - **Merging Schedules:** Combine schedules with methods like appending (`append_schedule`) or element-wise addition using [`combine`].
+  - **Merging Schedules:** Combine schedules using `append_schedule` to simply append events, or use `combine` to combine schedules element-wise by grouping corresponding events into a composite event. When simulated, each composite event yields the sum of its individual event outcomes.
   - **Builder Pattern:** Construct complex schedules using the fluent builder interface (`CashflowSchedule::builder()`).
 
 ## Installation
@@ -138,7 +138,7 @@ fn main() {
 ### Advanced Usage
 
 - **Scaling for Adjustments:** Use the `.scale()` method to adjust cashflows (for instance, for inflation).
-- **Merging Schedules:** Combine schedules using `append_schedule` or perform element-wise addition with `combine`.
+- **Merging Schedules:** Combine schedules using `append_schedule` to simply append events, or use `combine` to combine schedules element-wise by grouping corresponding events into a composite event. When simulated, each composite event yields the sum of its individual event outcomes.
 - **Custom Simulation Configuration:** For more control over simulation percentile thresholds, use `run_monte_carlo_with_config(...)`.
 
 ## Examples

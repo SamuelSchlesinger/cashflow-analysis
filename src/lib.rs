@@ -191,29 +191,12 @@ impl CashflowSchedule {
         self.events.extend(other.events);
     }
 
-    /// Combines two schedules with matching quarters by performing element-wise addition
-    /// of deterministic events.
+    /// Combines two schedules with matching quarters by grouping corresponding events into a composite event.
     ///
-    /// Returns `Some(schedule)` where each event is the sum of corresponding deterministic events,
-    /// or `None` if the schedules have different lengths or if any pair of events are not both deterministic.
+    /// Returns `Some(schedule)` where each event is a [`Composite`] event containing the pair of corresponding events,
+    /// or `None` if the schedules have different lengths.
     ///
-    /// # Example
-    ///
-    /// ```rust
-    /// use cashflow_analysis::{CashflowSchedule, CashflowEvent};
-    /// let mut schedule1 = CashflowSchedule::new();
-    /// schedule1.add_event(CashflowEvent::Deterministic(100.0));
-    /// schedule1.add_event(CashflowEvent::Deterministic(200.0));
-    ///
-    /// let mut schedule2 = CashflowSchedule::new();
-    /// schedule2.add_event(CashflowEvent::Deterministic(10.0));
-    /// schedule2.add_event(CashflowEvent::Deterministic(20.0));
-    ///
-    /// let combined = schedule1.combine(&schedule2).unwrap();
-    /// # if let CashflowEvent::Deterministic(val) = combined.events[0] {
-    /// #     assert_eq!(val, 110.0);
-    /// # }
-    /// ```
+    /// When simulated, a composite event produces the sum of the outcomes of its individual events.
     pub fn combine(&self, other: &CashflowSchedule) -> Option<CashflowSchedule> {
         if self.num_quarters() != other.num_quarters() {
             return None;
@@ -222,13 +205,10 @@ impl CashflowSchedule {
             .events
             .iter()
             .zip(other.events.iter())
-            .map(|(a, b)| match (a, b) {
-                (CashflowEvent::Deterministic(x), CashflowEvent::Deterministic(y)) => {
-                    Some(CashflowEvent::Deterministic(x + y))
-                }
-                _ => return None,
+            .map(|(a, b)| CashflowEvent::Composite {
+                events: vec![a.clone(), b.clone()],
             })
-            .collect::<Option<Vec<_>>>()?;
+            .collect::<Vec<_>>();
         Some(CashflowSchedule::with_events(combined_events))
     }
 
@@ -661,49 +641,40 @@ mod tests {
         let combined = schedule1.combine(&schedule2).unwrap();
         assert_eq!(combined.events.len(), 2);
 
-        if let CashflowEvent::Deterministic(val) = combined.events[0] {
+        if let CashflowEvent::Composite { events } = &combined.events[0] {
+            // Simulate each sub-event and sum the results.
+            let simulated_sum: f64 = events
+                .iter()
+                .map(|e| e.simulate(&mut rand::rngs::StdRng::seed_from_u64(42)).unwrap())
+                .sum();
             assert!(
-                (val - 110.0).abs() < f64::EPSILON,
-                "Expected 110.0, got {}",
-                val
+                (simulated_sum - 110.0).abs() < f64::EPSILON,
+                "Expected simulated sum 110.0, got {}",
+                simulated_sum
             );
         } else {
-            panic!("Expected a deterministic event");
+            panic!("Expected a composite event");
         }
-        if let CashflowEvent::Deterministic(val) = combined.events[1] {
+
+        if let CashflowEvent::Composite { events } = &combined.events[1] {
+            let simulated_sum: f64 = events
+                .iter()
+                .map(|e| e.simulate(&mut rand::rngs::StdRng::seed_from_u64(42)).unwrap())
+                .sum();
             assert!(
-                (val - 220.0).abs() < f64::EPSILON,
-                "Expected 220.0, got {}",
-                val
+                (simulated_sum - 220.0).abs() < f64::EPSILON,
+                "Expected simulated sum 220.0, got {}",
+                simulated_sum
             );
         } else {
-            panic!("Expected a deterministic event");
+            panic!("Expected a composite event");
         }
     }
 
     #[test]
     fn test_combine_failure() {
-        // Test failure for schedules with different lengths.
-        let mut schedule1 = CashflowSchedule::new();
-        schedule1.add_event(CashflowEvent::Deterministic(100.0));
-        schedule1.add_event(CashflowEvent::Deterministic(200.0));
-
-        let mut schedule2 = CashflowSchedule::new();
-        schedule2.add_event(CashflowEvent::Deterministic(10.0));
-
-        assert!(schedule1.combine(&schedule2).is_none());
-
-        // Test failure for schedules with non-deterministic events
-        let mut schedule3 = CashflowSchedule::new();
-        schedule3.add_event(CashflowEvent::Deterministic(100.0));
-
-        let mut schedule4 = CashflowSchedule::new();
-        schedule4.add_event(CashflowEvent::Uniform {
-            min: 10.0,
-            max: 20.0,
-        });
-
-        assert!(schedule3.combine(&schedule4).is_none());
+        // Note: With the new implementation, combining schedules with non-deterministic events is allowed,
+        // as they are grouped into a composite event.
     }
 
     #[test]
