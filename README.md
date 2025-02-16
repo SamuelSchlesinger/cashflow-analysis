@@ -106,9 +106,6 @@ For more detailed samples, please check the examples directory in the repository
 
 ## Limitations & Future Work
 
-- **Error Handling:**  
-  The current version may panic on invalid inputs (e.g., negative standard deviation). Future updates might include improved error handling.
-
 - **Additional Models:**  
   Support for additional probability distributions and advanced financial models is planned.
 
