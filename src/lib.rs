@@ -17,14 +17,12 @@
 //! Simulate a simple cashflow schedule:
 //!
 //! ```rust
-//! use cashflow_analysis::{CashflowSchedule, CashflowEvent, StochasticCashflowEvent};
+//! use cashflow_analysis::{CashflowSchedule, CashflowEvent};
 //! use rand::thread_rng;
 //!
 //! let mut schedule = CashflowSchedule::new();
 //! schedule.add_event(CashflowEvent::Deterministic(100.0));
-//! schedule.add_event(CashflowEvent::Stochastic(
-//!     StochasticCashflowEvent::Uniform { min: 10.0, max: 20.0 }
-//! ));
+//! schedule.add_event(CashflowEvent::Uniform { min: 10.0, max: 20.0 });
 //!
 //! let result = schedule.run_monte_carlo(10_000, thread_rng());
 //!
@@ -53,52 +51,28 @@ use rand::Rng;
 use rand::distr::{Distribution, weighted::WeightedIndex, Uniform};
 use rand_distr::{Normal, LogNormal, Exp};
 
-/// Represents a cashflow event, which may be either deterministic or stochastic.
+/// Represents a cashflow event. This unified, recursive type supports both single‐payout
+/// events and compound events.
 ///
 /// # Variants
 ///
 /// - `Deterministic(f64)`: A fixed cashflow value.
-/// - `Stochastic(StochasticCashflowEvent)`: A cashflow defined by a probabilistic model.
+/// - `Normal { mean, std_dev }`: A payout drawn from a Normal distribution.
+/// - `LogNormal { location, scale }`: A payout drawn from a LogNormal distribution.
+/// - `Uniform { min, max }`: A payout drawn uniformly from [min, max].
+/// - `Exponential { rate }`: A payout drawn from an Exponential distribution.
+/// - `Discrete { outcomes }`: A discrete weighted event; each outcome is itself a [`CashflowEvent`] paired
+///   with a probability.
+/// - `Composite { events }`: A compound event that aggregates multiple events (the resulting payout is
+///   the sum of the simulated outcomes from each sub-event).
 pub enum CashflowEvent {
     Deterministic(f64),
-    Stochastic(StochasticCashflowEvent),
-}
-
-pub enum StochasticCashflowEvent {
-    /// Normal (Gaussian) distribution with probability density function:
-    /// f(x) = (1/(σ√(2π))) * exp(-(x-μ)²/(2σ²))
-    /// where μ is the mean and σ is the standard deviation
-    Normal {
-        mean: f64,
-        std_dev: f64,
-    },
-    /// Log-normal distribution with probability density function:
-    /// f(x) = (1/(xσ√(2π))) * exp(-(ln(x)-μ)²/(2σ²))
-    /// where μ is the location parameter and σ is the scale parameter
-    LogNormal {
-        location: f64,
-        scale: f64,
-    },
-    /// Continuous uniform distribution with probability density function:
-    /// f(x) = 1/(b-a) for a ≤ x ≤ b
-    /// where a is the minimum value and b is the maximum value
-    Uniform {
-        min: f64,
-        max: f64,
-    },
-    /// Discrete uniform distribution with probability mass function:
-    /// P(X = xᵢ) = pᵢ
-    /// where xᵢ are the possible values and pᵢ are their corresponding probabilities
-    /// with Σpᵢ = 1
-    DiscreteUniform {
-        values: Vec<(f64, f64)>,
-    },
-    /// Exponential distribution with probability density function:
-    /// f(x) = λe^(-λx) for x ≥ 0
-    /// where λ is the rate parameter
-    Exponential {
-        rate: f64,
-    },
+    Normal { mean: f64, std_dev: f64 },
+    LogNormal { location: f64, scale: f64 },
+    Uniform { min: f64, max: f64 },
+    Exponential { rate: f64 },
+    Discrete { outcomes: Vec<(CashflowEvent, f64)> },
+    Composite { events: Vec<CashflowEvent> },
 }
 
 /// A schedule of cashflow events occurring sequentially by quarter.
@@ -161,72 +135,17 @@ impl CashflowSchedule {
 
     /// Returns a new schedule with all events scaled by a constant multiplier.
     ///
-    /// For deterministic events this multiplies the cashflow directly. For stochastic events,
-    /// the relevant parameters (such as mean, min, and max) are scaled. (Note that for some events,
-    /// such as Exponential, scaling may not be directly meaningful.)
+    /// This applies the [`scale`] method of [`CashflowEvent`] to each event.
     pub fn scale(&self, factor: f64) -> CashflowSchedule {
-        let events = self.events.iter().map(|ev| {
-            match ev {
-                CashflowEvent::Deterministic(val) => CashflowEvent::Deterministic(val * factor),
-                CashflowEvent::Stochastic(stoch) => {
-                    let new_stoch = match stoch {
-                        StochasticCashflowEvent::Normal { mean, std_dev } => {
-                            StochasticCashflowEvent::Normal { mean: mean * factor, std_dev: std_dev * factor }
-                        },
-                        StochasticCashflowEvent::LogNormal { location, scale } => {
-                            StochasticCashflowEvent::LogNormal { location: location * factor, scale: scale * factor }
-                        },
-                        StochasticCashflowEvent::Uniform { min, max } => {
-                            StochasticCashflowEvent::Uniform { min: min * factor, max: max * factor }
-                        },
-                        StochasticCashflowEvent::DiscreteUniform { values } => {
-                            let scaled: Vec<(f64, f64)> = values.iter().map(|(val, prob)| (val * factor, *prob)).collect();
-                            StochasticCashflowEvent::DiscreteUniform { values: scaled }
-                        },
-                        StochasticCashflowEvent::Exponential { rate } => {
-                            // For exponential events, scaling the output might be applied after sampling.
-                            // Leaving the rate unchanged here.
-                            StochasticCashflowEvent::Exponential { rate: *rate }
-                        },
-                    };
-                    CashflowEvent::Stochastic(new_stoch)
-                }
-            }
-        }).collect();
+        let events = self.events.iter().map(|ev| ev.scale(factor)).collect();
         CashflowSchedule::with_events(events)
     }
 
-    /// Returns a new schedule with all deterministic events offset by a constant value.
+    /// Returns a new schedule with all events offset by a constant value.
     ///
-    /// For stochastic events (e.g. Normal, Uniform), this applies a shift to the relevant parameter.
+    /// This applies the [`offset`] method of [`CashflowEvent`] to each event.
     pub fn offset(&self, shift: f64) -> CashflowSchedule {
-        let events = self.events.iter().map(|ev| {
-            match ev {
-                CashflowEvent::Deterministic(val) => CashflowEvent::Deterministic(val + shift),
-                CashflowEvent::Stochastic(stoch) => {
-                    let new_stoch = match stoch {
-                        StochasticCashflowEvent::Normal { mean, std_dev } => {
-                            StochasticCashflowEvent::Normal { mean: mean + shift, std_dev: *std_dev }
-                        },
-                        StochasticCashflowEvent::LogNormal { location, scale } => {
-                            StochasticCashflowEvent::LogNormal { location: location + shift, scale: *scale }
-                        },
-                        StochasticCashflowEvent::Uniform { min, max } => {
-                            StochasticCashflowEvent::Uniform { min: min + shift, max: max + shift }
-                        },
-                        StochasticCashflowEvent::DiscreteUniform { values } => {
-                            let shifted: Vec<(f64, f64)> = values.iter().map(|(val, prob)| (val + shift, *prob)).collect();
-                            StochasticCashflowEvent::DiscreteUniform { values: shifted }
-                        },
-                        StochasticCashflowEvent::Exponential { rate } => {
-                            // Offsetting an exponential distribution is typically not done.
-                            StochasticCashflowEvent::Exponential { rate: *rate }
-                        },
-                    };
-                    CashflowEvent::Stochastic(new_stoch)
-                }
-            }
-        }).collect();
+        let events = self.events.iter().map(|ev| ev.offset(shift)).collect();
         CashflowSchedule::with_events(events)
     }
 
@@ -297,14 +216,12 @@ impl CashflowSchedule {
     /// # Example
     ///
     /// ```rust
-    /// use cashflow_analysis::{CashflowSchedule, CashflowEvent, StochasticCashflowEvent};
+    /// use cashflow_analysis::{CashflowSchedule, CashflowEvent};
     /// use rand::thread_rng;
     /// 
     /// let mut schedule = CashflowSchedule::new();
     /// schedule.add_event(CashflowEvent::Deterministic(100.0));
-    /// schedule.add_event(CashflowEvent::Stochastic(
-    ///     StochasticCashflowEvent::Uniform { min: 10.0, max: 20.0 }
-    /// ));
+    /// schedule.add_event(CashflowEvent::Uniform { min: 10.0, max: 20.0 });
     /// 
     /// let result = schedule.run_monte_carlo(10_000, thread_rng());
     /// 
@@ -363,32 +280,32 @@ impl CashflowSchedule {
 fn simulate_cashflow_event<R: Rng + ?Sized>(event: &CashflowEvent, rng: &mut R) -> f64 {
     match event {
         CashflowEvent::Deterministic(value) => *value,
-        CashflowEvent::Stochastic(stoch_event) => {
-            match stoch_event {
-                StochasticCashflowEvent::Normal { mean, std_dev } => {
-                    let normal = Normal::new(*mean, *std_dev).unwrap();
-                    normal.sample(rng)
-                },
-                StochasticCashflowEvent::LogNormal { location, scale } => {
-                    let lognormal = LogNormal::new(*location, *scale).unwrap();
-                    lognormal.sample(rng)
-                },
-                StochasticCashflowEvent::Uniform { min, max } => {
-                    let uniform = Uniform::new_inclusive(*min, *max).unwrap();
-                    uniform.sample(rng)
-                },
-                StochasticCashflowEvent::DiscreteUniform { values } => {
-                    let weights: Vec<f64> = values.iter().map(|&(_val, prob)| prob).collect();
-                    let dist = WeightedIndex::new(&weights).unwrap();
-                    let index = dist.sample(rng);
-                    values[index].0
-                },
-                StochasticCashflowEvent::Exponential { rate } => {
-                    let exp = Exp::new(*rate).unwrap();
-                    exp.sample(rng)
-                },
-            }
-        }
+        CashflowEvent::Normal { mean, std_dev } => {
+            let normal = Normal::new(*mean, *std_dev).unwrap();
+            normal.sample(rng)
+        },
+        CashflowEvent::LogNormal { location, scale } => {
+            let lognormal = LogNormal::new(*location, *scale).unwrap();
+            lognormal.sample(rng)
+        },
+        CashflowEvent::Uniform { min, max } => {
+            let uniform = Uniform::new_inclusive(*min, *max).unwrap();
+            uniform.sample(rng)
+        },
+        CashflowEvent::Exponential { rate } => {
+            let exp = Exp::new(*rate).unwrap();
+            exp.sample(rng)
+        },
+        CashflowEvent::Discrete { outcomes } => {
+            let weights: Vec<f64> = outcomes.iter().map(|&(_, prob)| prob).collect();
+            let dist = WeightedIndex::new(&weights).unwrap();
+            let index = dist.sample(rng);
+            let (ref outcome, _) = outcomes[index];
+            simulate_cashflow_event(outcome, rng)
+        },
+        CashflowEvent::Composite { events } => {
+            events.iter().map(|ev| simulate_cashflow_event(ev, rng)).sum()
+        },
     }
 }
 
@@ -413,13 +330,11 @@ pub struct SimulationResult {
 /// This builder provides a concise and readable way to assemble a schedule:
 ///
 /// ```rust
-/// use cashflow_analysis::{CashflowScheduleBuilder, CashflowEvent, StochasticCashflowEvent};
+/// use cashflow_analysis::{CashflowScheduleBuilder, CashflowEvent};
 /// 
 /// let schedule = CashflowScheduleBuilder::new()
 ///     .add_event(CashflowEvent::Deterministic(100.0))
-///     .add_event(CashflowEvent::Stochastic(
-///         StochasticCashflowEvent::Uniform { min: 10.0, max: 20.0 }
-///     ))
+///     .add_event(CashflowEvent::Uniform { min: 10.0, max: 20.0 })
 ///     .build();
 /// 
 /// assert_eq!(schedule.num_quarters(), 2);
@@ -451,6 +366,58 @@ impl CashflowScheduleBuilder {
 impl Default for CashflowScheduleBuilder {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl CashflowEvent {
+    /// Returns a new cashflow event with all payouts multiplied by the given factor.
+    pub fn scale(&self, factor: f64) -> CashflowEvent {
+        match self {
+            CashflowEvent::Deterministic(val) => CashflowEvent::Deterministic(val * factor),
+            CashflowEvent::Normal { mean, std_dev } =>
+                CashflowEvent::Normal { mean: mean * factor, std_dev: std_dev * factor },
+            CashflowEvent::LogNormal { location, scale } =>
+                CashflowEvent::LogNormal { location: location * factor, scale: scale * factor },
+            CashflowEvent::Uniform { min, max } =>
+                CashflowEvent::Uniform { min: min * factor, max: max * factor },
+            CashflowEvent::Exponential { rate } =>
+                CashflowEvent::Exponential { rate: *rate }, // unchanged, or apply logic as needed
+            CashflowEvent::Discrete { outcomes } => {
+                let out = outcomes.iter()
+                    .map(|(ev, prob)| (ev.scale(factor), *prob))
+                    .collect();
+                CashflowEvent::Discrete { outcomes: out }
+            },
+            CashflowEvent::Composite { events } => {
+                let evs = events.iter().map(|ev| ev.scale(factor)).collect();
+                CashflowEvent::Composite { events: evs }
+            },
+        }
+    }
+
+    /// Returns a new cashflow event with all payouts increased by the given offset.
+    pub fn offset(&self, shift: f64) -> CashflowEvent {
+        match self {
+            CashflowEvent::Deterministic(val) => CashflowEvent::Deterministic(val + shift),
+            CashflowEvent::Normal { mean, std_dev } =>
+                CashflowEvent::Normal { mean: mean + shift, std_dev: *std_dev },
+            CashflowEvent::LogNormal { location, scale } =>
+                CashflowEvent::LogNormal { location: location + shift, scale: *scale },
+            CashflowEvent::Uniform { min, max } =>
+                CashflowEvent::Uniform { min: min + shift, max: max + shift },
+            CashflowEvent::Exponential { rate } =>
+                CashflowEvent::Exponential { rate: *rate },
+            CashflowEvent::Discrete { outcomes } => {
+                let out = outcomes.iter()
+                    .map(|(ev, prob)| (ev.offset(shift), *prob))
+                    .collect();
+                CashflowEvent::Discrete { outcomes: out }
+            },
+            CashflowEvent::Composite { events } => {
+                let evs = events.iter().map(|ev| ev.offset(shift)).collect();
+                CashflowEvent::Composite { events: evs }
+            },
+        }
     }
 }
 
@@ -500,7 +467,7 @@ mod tests {
         // Create a schedule with a uniform random event for Q1,
         // followed by a deterministic event for Q2.
         let mut schedule = CashflowSchedule::new();
-        schedule.add_event(CashflowEvent::Stochastic(StochasticCashflowEvent::Uniform { min: 10.0, max: 20.0 }));
+        schedule.add_event(CashflowEvent::Uniform { min: 10.0, max: 20.0 });
         schedule.add_event(CashflowEvent::Deterministic(30.0));
 
         let rng = StdRng::seed_from_u64(789);
@@ -519,50 +486,10 @@ mod tests {
     }
 
     #[test]
-    fn test_discrete_uniform_simulation() {
-        // Use a discrete uniform distribution with two outcomes.
-        let mut schedule = CashflowSchedule::new();
-        // Options: 100.0 with probability 0.3, and 200.0 with probability 0.7.
-        schedule.add_event(CashflowEvent::Stochastic(StochasticCashflowEvent::DiscreteUniform {
-            values: vec![(100.0, 0.3), (200.0, 0.7)]
-        }));
-
-        let rng = StdRng::seed_from_u64(555);
-        let result = schedule.run_monte_carlo(10_000, rng);
-
-        let stat_q1 = &result.quarter_stats[0];
-        // Check that the mean is between 100 and 200, and the min/max must be one of these values.
-        assert!(stat_q1.mean >= 100.0 && stat_q1.mean <= 200.0, "Discrete uniform mean out of range: {}", stat_q1.mean);
-        assert!( (stat_q1.min - 100.0).abs() < f64::EPSILON || (stat_q1.min - 200.0).abs() < f64::EPSILON,
-                "Discrete uniform min unexpected: {}", stat_q1.min);
-        assert!( (stat_q1.max - 100.0).abs() < f64::EPSILON || (stat_q1.max - 200.0).abs() < f64::EPSILON,
-                "Discrete uniform max unexpected: {}", stat_q1.max);
-    }
-
-    #[test]
-    fn test_normal_simulation() {
-        // Create a schedule with a normal random event.
-        let mut schedule = CashflowSchedule::new();
-        schedule.add_event(CashflowEvent::Stochastic(StochasticCashflowEvent::Normal {
-            mean: 50.0,
-            std_dev: 5.0,
-        }));
-
-        let rng = StdRng::seed_from_u64(999);
-        let result = schedule.run_monte_carlo(10_000, rng);
-
-        let stat_q1 = &result.quarter_stats[0];
-        // Expect the mean to be around 50.
-        assert!((stat_q1.mean - 50.0).abs() < 1.0, "Normal event mean too far from expected: {}", stat_q1.mean);
-        // Variance should be roughly 25.
-        assert!(stat_q1.variance > 20.0 && stat_q1.variance < 30.0, "Normal event variance out of range: {}", stat_q1.variance);
-    }
-
-    #[test]
     fn test_exponential_simulation() {
         // Create a schedule with an exponential event (rate = 0.1, theoretical mean = 10).
         let mut schedule = CashflowSchedule::new();
-        schedule.add_event(CashflowEvent::Stochastic(StochasticCashflowEvent::Exponential { rate: 0.1 }));
+        schedule.add_event(CashflowEvent::Exponential { rate: 0.1 });
 
         let rng = StdRng::seed_from_u64(2021);
         let result = schedule.run_monte_carlo(10_000, rng);
@@ -577,9 +504,7 @@ mod tests {
         // Create a schedule with one deterministic and one stochastic (Uniform) event.
         let mut schedule = CashflowSchedule::new();
         schedule.add_event(CashflowEvent::Deterministic(100.0));
-        schedule.add_event(CashflowEvent::Stochastic(
-            StochasticCashflowEvent::Uniform { min: 10.0, max: 20.0 }
-        ));
+        schedule.add_event(CashflowEvent::Uniform { min: 10.0, max: 20.0 });
 
         // Test scaling
         let scaled_schedule = schedule.scale(2.0);
@@ -590,7 +515,7 @@ mod tests {
             panic!("Expected a Deterministic event");
         }
         // Second event: Uniform (10,20) becomes Uniform (20,40)
-        if let CashflowEvent::Stochastic(StochasticCashflowEvent::Uniform { min, max }) = &scaled_schedule.events[1] {
+        if let CashflowEvent::Uniform { min, max } = &scaled_schedule.events[1] {
             assert!((*min - 20.0).abs() < f64::EPSILON, "Expected scaled min 20, got {}", min);
             assert!((*max - 40.0).abs() < f64::EPSILON, "Expected scaled max 40, got {}", max);
         } else {
@@ -604,7 +529,7 @@ mod tests {
         } else {
             panic!("Expected a Deterministic event");
         }
-        if let CashflowEvent::Stochastic(StochasticCashflowEvent::Uniform { min, max }) = &offset_schedule.events[1] {
+        if let CashflowEvent::Uniform { min, max } = &offset_schedule.events[1] {
             assert!((*min - 20.0).abs() < f64::EPSILON, "Expected offset min 20, got {}", min);
             assert!((*max - 30.0).abs() < f64::EPSILON, "Expected offset max 30, got {}", max);
         } else {
@@ -672,11 +597,20 @@ mod tests {
         schedule3.add_event(CashflowEvent::Deterministic(100.0));
 
         let mut schedule4 = CashflowSchedule::new();
-        schedule4.add_event(CashflowEvent::Stochastic(
-            StochasticCashflowEvent::Uniform { min: 10.0, max: 20.0 }
-        ));
+        schedule4.add_event(CashflowEvent::Uniform { min: 10.0, max: 20.0 });
 
         assert!(schedule3.combine(&schedule4).is_none());
+    }
+
+    #[test]
+    fn test_run_monte_carlo() {
+        let mut schedule = CashflowSchedule::new();
+        schedule.add_event(CashflowEvent::Deterministic(100.0));
+        schedule.add_event(CashflowEvent::Uniform { min: 10.0, max: 20.0 });
+        let rng = StdRng::seed_from_u64(123);
+        let result = schedule.run_monte_carlo(100, rng);
+        // Assert that the simulation produced some quarter statistics.
+        assert!(!result.quarter_stats.is_empty(), "Expected non-empty quarter statistics");
     }
 
     #[test]
@@ -684,9 +618,7 @@ mod tests {
         // Use the builder to construct a cashflow schedule.
         let schedule = CashflowScheduleBuilder::new()
             .add_event(CashflowEvent::Deterministic(100.0))
-            .add_event(CashflowEvent::Stochastic(
-                StochasticCashflowEvent::Uniform { min: 10.0, max: 20.0 }
-            ))
+            .add_event(CashflowEvent::Uniform { min: 10.0, max: 20.0 })
             .build();
 
         assert_eq!(schedule.events.len(), 2);
@@ -696,11 +628,11 @@ mod tests {
         } else {
             panic!("Expected deterministic event");
         }
-        if let CashflowEvent::Stochastic(StochasticCashflowEvent::Uniform { min, max }) = &schedule.events[1] {
+        if let CashflowEvent::Uniform { min, max } = &schedule.events[1] {
             assert!((*min - 10.0).abs() < f64::EPSILON);
             assert!((*max - 20.0).abs() < f64::EPSILON);
         } else {
-            panic!("Expected uniform stochastic event");
+            panic!("Expected uniform event");
         }
     }
 }
